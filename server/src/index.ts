@@ -13,6 +13,7 @@ import { createCheckpoint, getCheckpoint, listCheckpoints } from "./checkpoint.t
 import { startBackgroundJobs }   from "./jobs.ts";
 import { cacheStats, cacheGet, cacheSet } from "./cache.ts";
 import { log } from "./logger.ts";
+import { renderDashboard } from "./dashboard.ts";
 
 // ── Path helper ────────────────────────────────────────────────
 function normalizeWinPath(p: string): string {
@@ -56,6 +57,13 @@ async function parseBody(req: Request): Promise<Record<string, unknown>> {
 }
 
 // ── Routes ───────────────────────────────────────────────────────
+
+// GET / — T5.1: dashboard browser
+route("GET", "/", async () => {
+  return new Response(renderDashboard(CONFIG.port), {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+});
 
 // GET /health
 route("GET", "/health", async (_req, url) => {
@@ -197,7 +205,39 @@ route("POST", "/api/context/optimized", async (req) => {
   return json({ success: true, ...result });
 });
 
-// DELETE /api/memory/:id  — T4.1: memless_forget
+// GET /api/memory/:id — T5.2: fetch memoria completa para modal de edição
+route("GET", /^\/api\/memory\/([^/]+)$/, async (_req, url) => {
+  const id = url.pathname.split("/").pop()!;
+  const db = getDb();
+  const row = db.query<any, [string]>("SELECT * FROM memories WHERE id=?").get(id);
+  if (!row) return err("Memory not found", 404);
+  const mem = {
+    id: row.id, content: row.content, type: row.type, level: row.level,
+    importance: row.importance, tags: safeParseJson(row.tags, []),
+    createdAt: row.created_at, accessCount: row.access_count,
+  };
+  return json({ success: true, data: mem });
+});
+
+// PATCH /api/memory/:id — T5.2: editar conteudo e importancia
+route("PATCH", /^\/api\/memory\/([^/]+)$/, async (req, url) => {
+  const id   = url.pathname.split("/").pop()!;
+  const body = await parseBody(req);
+  const { content, importance, tags } = body as any;
+  const db   = getDb();
+  const sets: string[] = [];
+  const args: unknown[] = [];
+  if (content    !== undefined) { sets.push("content=?");    args.push(String(content)); }
+  if (importance !== undefined) { sets.push("importance=?"); args.push(Number(importance)); }
+  if (tags       !== undefined) { sets.push("tags=?");       args.push(JSON.stringify(tags)); }
+  if (!sets.length) return err("nothing to update");
+  args.push(id);
+  const stmt = db.run(`UPDATE memories SET ${sets.join(", ")} WHERE id=?`, args as any[]);
+  if ((stmt as any).changes === 0) return err("Memory not found", 404);
+  return json({ success: true, updated: id });
+});
+
+// DELETE /api/memory/:id — T4.1: memless_forget
 route("DELETE", /^\/api\/memory\/([^/]+)$/, async (_req, url) => {
   const id = url.pathname.split("/").pop()!;
   const db = getDb();
@@ -254,6 +294,11 @@ route("GET", "/api/analytics", async (_req, url) => {
 route("GET", "/api/cache/stats", async () => {
   return json({ success: true, data: cacheStats() });
 });
+
+// ── helpers locais ────────────────────────────────────────────────────
+function safeParseJson<T>(s: string, fallback: T): T {
+  try { return JSON.parse(s); } catch { return fallback; }
+}
 
 // ── djb2 hash para cache keys compactas ────────────────────────
 function djb2(str: string): string {
