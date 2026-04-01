@@ -458,7 +458,7 @@ export default function (pi: ExtensionAPI) {
       nextAction:      Type.Optional(Type.String({ description: "What to do next when restoring" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
-      const pid = projectId || ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
+      const pid = (projectId || ctx.cwd.split(/[/\\]/).filter(Boolean).pop()) ?? "project";
       if (!await isServerRunning())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/checkpoint/create", { ...params, projectId: pid });
