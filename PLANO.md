@@ -9,11 +9,11 @@
 ## Visão Rápida — Progresso Geral
 
 ```
-Fase 1 — Token Economy (bugs reais)        [ ] [ ] [ ] [ ]     0/4
-Fase 2 — Hooks & UX                        [ ] [ ] [ ] [ ]     0/4
-Fase 3 — Remoção de Ruído                  [ ] [ ] [ ] [ ]     0/4
-Fase 4 — Ferramentas Novas                 [ ] [ ] [ ]         0/3
-Fase 5 — Dashboard Browser                 [ ] [ ]             0/2
+Fase 1 — Token Economy (bugs reais)        [x] [x] [x] [x]     4/4 ✅
+Fase 2 — Hooks & UX                        [x] [x] [x] [ ]     3/4
+Fase 3 — Remoção de Ruído                  [x] [x] [x] [x]     4/4 ✅
+Fase 4 — Ferramentas Novas                 [x] [x] [x]         3/3 ✅
+Fase 5 — Dashboard Browser                 [x] [x]             2/2 ✅
 Fase 6 — Arquitetura (médio prazo)         [ ] [ ] [ ]         0/3
 ```
 
@@ -27,7 +27,7 @@ Fase 6 — Arquitetura (médio prazo)         [ ] [ ] [ ]         0/3
 ---
 
 ### T1.1 — `memless_context`: compressão nunca dispara, `tokensSaved` sempre 0
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f2304d`  
 **Arquivos:** `server/src/index.ts` (rota `/api/context/optimized`)  
 **Custo:** ~30 min  
 **Impacto:** corrige a métrica principal do memless; a compressão passa a acontecer de verdade
@@ -69,7 +69,7 @@ const tokensSaved = rawToks - estimateTokens(codeSection); // economia real
 ---
 
 ### T1.2 — Cache L2 (cross-session) nunca tem hits por causa do `sessionId` na chave
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f2304d`  
 **Arquivos:** `server/src/index.ts` (rota `/api/context/optimized`)  
 **Custo:** 15 min  
 **Impacto:** L2 cache passa a funcionar entre sessões — queries recorrentes na mesma semana não re-executam busca+compressão
@@ -100,7 +100,7 @@ function hashQuery(q: string): string {
 ---
 
 ### T1.3 — `isServerRunning()` em cada ferramenta — 1 fetch `/health` extra por tool call
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 1h  
 **Impacto:** elimina até 9 roundtrips HTTP extras por sessão (1 por ferramenta chamada); reduz latência percebida
@@ -141,7 +141,7 @@ async function checkServer(): Promise<boolean> {
 ---
 
 ### T1.4 — `memless_compress`: sem threshold mínimo — roundtrip HTTP para conteúdo tiny
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts` (tool `memless_compress`)  
 **Custo:** 20 min  
 **Impacto:** evita custo de rede para compressões inúteis (<200 tokens já são minúsculos)
@@ -179,7 +179,7 @@ async execute(_id, params) {
 ---
 
 ### T2.1 — `before_agent_start`: recall seletivo — não injetar em prompts triviais
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 45 min  
 **Impacto:** elimina o bloco de memórias no contexto para ~40% dos prompts (comandos rápidos, oneliners)
@@ -227,7 +227,7 @@ pi.on("before_agent_start", async (event, ctx) => {
 ---
 
 ### T2.2 — `session_before_compact`: auto-extrair decisões para memórias (hook de ouro)
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 2h  
 **Impacto:** cada compaction passa a persistir automaticamente decisões-chave sem o agente precisar chamar `memless_remember` — memória cresce organicamente
@@ -277,7 +277,7 @@ pi.on("session_before_compact", async (event, ctx) => {
 ---
 
 ### T2.3 — Status bar: mostrar progresso de indexação em tempo real
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 1.5h  
 **Impacto:** o agente sabe quando pode buscar com confiança; elimina buscas silenciosamente vazias durante indexação inicial
@@ -328,7 +328,7 @@ await startIndexAndPoll(ctx);
 ---
 
 ### T2.4 — `before_tool_call` hook: avisar quando index está stale antes de busca
-**Status:** `[ ]`  
+**Status:** `[ ]` pendente — verificar se Pi SDK expe before_tool_call  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 1h  
 **Impacto:** o agente recebe alerta proativo quando vai buscar em índice desatualizado — evita confusão com resultados incompletos
@@ -376,7 +376,7 @@ let lastStalenessCheck = 0;
 ---
 
 ### T3.1 — `session_shutdown`: remover nota inútil de sessão
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 20 min  
 **Impacto:** elimina ~1 memória inútil por sessão que polui recall e consome importance budget
@@ -421,7 +421,7 @@ let toolCallCount = 0;
 ---
 
 ### T3.2 — `semantic_dedup`: renomear strategy para `line_dedup` (documentação honesta)
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `server/src/compression.ts`, `extensions/memless/index.ts`, `AGENTS.md`, `skills/memless/SKILL.md`  
 **Custo:** 30 min  
 **Impacto:** evita que o agente confie em "deduplicação semântica" que na prática só remove linhas exatas — previne estratégia errada de compressão
@@ -447,7 +447,7 @@ Type.Literal("line_dedup")  // ← atualizar descrição: "remove duplicate line
 ---
 
 ### T3.3 — `memless_recall`: truncar conteúdo longo de memórias no output
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts` (tool `memless_recall`)  
 **Custo:** 15 min  
 **Impacto:** previne recall de explodir o contexto com uma única memória longa (ex: trecho de código armazenado inteiro); economiza tokens diretos
@@ -478,7 +478,7 @@ const text = memories.map(m => {
 ---
 
 ### T3.4 — Silenciar logs de ruído do servidor (`consolidation`, `background jobs`)
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f2304d`  
 **Arquivos:** `server/src/jobs.ts`, `server/src/index.ts`, `server/src/embeddings.ts`  
 **Custo:** 20 min  
 **Impacto:** elimina spam no stderr como `[memless] consolidation: +0 promoted, 8 decayed, 0 pruned` que aparece a cada 5 min sem dizer nada útil; terminal fica limpo
@@ -544,7 +544,7 @@ serverProcess = spawn(bun, ["src/index.ts"], {
 ---
 
 ### T4.1 — Adicionar `memless_forget` — deletar/corrigir memórias erradas
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts`, `server/src/index.ts`, `server/src/memory.ts`  
 **Custo:** 3h  
 **Impacto:** memórias erradas são corrigíveis; hoje são permanentes por 45 dias
@@ -588,7 +588,7 @@ pi.registerTool({
 ---
 
 ### T4.2 — Deduplicação no `memless_remember` — não criar memórias redundantes
-**Status:** `[ ]`  
+**Status:** `[x]` commit `49666a7`  
 **Arquivos:** `server/src/memory.ts` (função `storeMemory`)  
 **Custo:** 2h  
 **Impacto:** previne banco de memórias crescer com duplicatas semânticas; recall retorna informação mais densa
@@ -642,7 +642,7 @@ if (resp.data?.deduplicated) {
 ---
 
 ### T4.3 — `memless_context`: expor `responseMode` ao agente
-**Status:** `[ ]`  
+**Status:** `[x]` commit `0f6d1f3`  
 **Arquivos:** `extensions/memless/index.ts` (tool `memless_context`)  
 **Custo:** 30 min  
 **Impacto:** agente pode pedir contexto "full" quando precisa ver código completo, ou "summary" quando quer só orientação — controle explícito de tokens
@@ -684,7 +684,7 @@ pi.registerTool({
 ---
 
 ### T5.1 — Servidor: rota `GET /` → dashboard HTML com dados em tempo real
-**Status:** `[ ]`  
+**Status:** `[x]` commit `34e5d32`  
 **Arquivos:** `server/src/index.ts`, `server/src/dashboard.ts` (novo)  
 **Custo:** 4h  
 **Impacto:** visibilidade completa do estado do memless sem terminal — memórias, cache, buscas, jobs de indexação, tudo em um browser; elimina a necessidade de `memless_analytics` para inspeção humana
@@ -835,7 +835,7 @@ ctx.ui.notify(
 ---
 
 ### T5.2 — Dashboard: página de detalhes de memória + edição inline
-**Status:** `[ ]`  
+**Status:** `[x]` commit `34e5d32`  
 **Arquivos:** `server/src/dashboard.ts`, `server/src/index.ts`  
 **Custo:** 2h  
 **Dependência:** T5.1 concluído  
@@ -859,7 +859,7 @@ ctx.ui.notify(
 ---
 
 ### T6.1 — Vector search: eliminar full table scan com `sqlite-vec`
-**Status:** `[ ]`  
+**Status:** `[ ]` pendente  
 **Arquivos:** `server/src/search.ts`, `server/src/memory.ts`, `server/src/db.ts`  
 **Custo:** 1 dia  
 **Impacto:** em projetos com 5.000+ chunks, a busca atual carrega ~30MB de JSON na memória. Com sqlite-vec, a busca vetorial fica no SQLite nativo.
@@ -874,7 +874,7 @@ ctx.ui.notify(
 ---
 
 ### T6.2 — `compressCodeStructure`: corrigir contagem de `{` em strings
-**Status:** `[ ]`  
+**Status:** `[ ]` pendente  
 **Arquivos:** `server/src/compression.ts`  
 **Custo:** 3h  
 **Impacto:** compressão de código com template literals / strings com `{` deixa de produzir resultados incorretos
@@ -884,7 +884,7 @@ ctx.ui.notify(
 ---
 
 ### T6.3 — `collectFiles`: respeitar `.gitignore`
-**Status:** `[ ]`  
+**Status:** `[ ]` pendente  
 **Arquivos:** `server/src/search.ts`  
 **Custo:** 2h  
 **Impacto:** projetos com `.gitignore` não terão arquivos de build/dist indexados, reduzindo ruído nas buscas e tamanho do índice
@@ -902,20 +902,21 @@ ctx.ui.notify(
 
 Após completar todas as fases, validar:
 
-- [ ] `memless_context` com código real → `tokensSaved > 0` no header
-- [ ] Segunda sessão com mesma query → `cacheHit: true` no header  
-- [ ] Prompt curto `"ls"` → nenhum bloco `## memless: recalled context` injetado
-- [ ] Prompt longo sobre feature → bloco de memórias injetado corretamente
-- [ ] Abrir Pi em projeto grande → status bar mostra progresso de indexação
-- [ ] `memless_forget` deleta memória → `memless_recall` não a retorna mais
-- [ ] `memless_remember` duas vezes com conteúdo similar → segundo reforça, não duplica
-- [ ] `session_before_compact` em sessão longa → auto-salva decisões tagged `auto-compact`
-- [ ] `memless_compress` com snippet <200 tokens → retorno imediato sem hit no servidor
-- [ ] Memória com 2000 chars → `memless_recall` trunca para 500 chars no output
-- [ ] Iniciar Pi → nenhum log de consolidation aparece a cada 5 min no terminal
-- [ ] `http://localhost:3434` → dashboard carrega com memórias, cache stats e top queries
-- [ ] Dashboard → botão `del` em memória → memória removida sem usar LLM
-- [ ] Comando `/memless` → exibe link `dashboard: http://localhost:3434`
+- [x] `memless_context` com código real → `tokensSaved > 0` no header
+- [x] Segunda sessão com mesma query → `cacheHit: true` no header  
+- [x] Prompt curto `"ls"` → nenhum bloco `## memless: recalled context` injetado
+- [x] Prompt longo sobre feature → bloco de memórias injetado corretamente
+- [x] Abrir Pi em projeto grande → status bar mostra progresso de indexação
+- [x] `memless_forget` deleta memória → `memless_recall` não a retorna mais
+- [x] `memless_remember` duas vezes com conteúdo similar → segundo reforça, não duplica
+- [x] `session_before_compact` em sessão longa → auto-salva decisões tagged `auto-compact`
+- [x] `memless_compress` com snippet <200 tokens → retorno imediato sem hit no servidor
+- [x] Memória com 2000 chars → `memless_recall` trunca para 500 chars no output
+- [x] Iniciar Pi → nenhum log de consolidation aparece a cada 5 min no terminal
+- [x] `http://localhost:3434` → dashboard carrega com memórias, cache stats e top queries
+- [x] Dashboard → botão `del` em memória → memória removida sem usar LLM
+- [x] Comando `/memless` → exibe link `dashboard: http://localhost:3434`
+- [ ] `before_tool_call` (T2.4) — pendente verificação do hook no Pi SDK
 
 ---
 
@@ -943,5 +944,5 @@ Após completar todas as fases, validar:
 
 ---
 
-*Última atualização: 2026-04-01 (rev 2 — dashboard browser + silenciar logs)*  
+*Última atualização: 2026-04-01 (rev 3 — implementação completa F1–F5)*  
 *Análise base: análise aprofundada registrada em memless (mem_1775016235682_26b74e)*
