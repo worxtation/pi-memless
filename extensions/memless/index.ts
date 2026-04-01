@@ -52,6 +52,21 @@ let projectPath = "";
 let sessionId   = "";
 let indexJobId  = "";
 let initialRecallDone = false;
+let toolCallCount = 0;           // T3.1 — rastrear atividade real da sessão
+
+// ── Health cache (T1.3) ───────────────────────────────────────
+let _serverHealthy    = false;
+let _lastHealthCheck  = 0;
+const HEALTH_CACHE_MS = 45_000; // 45s — detecta crash sem roundtrip em toda call
+
+async function checkServer(): Promise<boolean> {
+  const now = Date.now();
+  if (_serverHealthy && now - _lastHealthCheck < HEALTH_CACHE_MS) return true;
+  const ok = await isServerRunning();
+  _serverHealthy   = ok;
+  _lastHealthCheck = now;
+  return ok;
+}
 
 // ── HTTP helpers ─────────────────────────────────────────────────
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -135,6 +150,36 @@ async function ensureServer(ctx: any): Promise<boolean> {
   return false;
 }
 
+// ── T2.3: progress polling durante indexação ───────────────────────────
+async function startIndexWithProgress(ctx: any) {
+  try {
+    const resp = await api<any>("POST", "/api/index", { projectPath, projectId });
+    indexJobId = resp.data?.jobId ?? "";
+    if (!indexJobId) { ctx.ui.setStatus("memless", "● ready"); return; }
+    const poll = async () => {
+      try {
+        const s = await api<any>("GET", `/api/index/status/${indexJobId}`);
+        const d = s.data;
+        if (d.status === "running") {
+          const pct = d.progressTotal > 0
+            ? Math.round((d.progressCurrent / d.progressTotal) * 100) : 0;
+          ctx.ui.setStatus("memless", `indexing ${d.progressCurrent}/${d.progressTotal} (${pct}%)`);
+          setTimeout(poll, 1500);
+        } else if (d.status === "completed") {
+          ctx.ui.setStatus("memless", `● ready — ${d.filesIndexed} files, ${d.chunksIndexed} chunks`);
+          setTimeout(() => ctx.ui.setStatus("memless", "● ready"), 5000);
+        } else {
+          ctx.ui.setStatus("memless", "● ready");
+        }
+      } catch { ctx.ui.setStatus("memless", "● ready"); }
+    };
+    setTimeout(poll, 800);
+  } catch (e) {
+    ctx.ui.notify(`[memless] index error: ${e}`, "warning");
+    ctx.ui.setStatus("memless", "● ready");
+  }
+}
+
 // ════════════════════════════════════════════════════════════════
 // Extension entry point
 // ════════════════════════════════════════════════════════════════
@@ -142,34 +187,41 @@ export default function (pi: ExtensionAPI) {
 
   // ── session_start ─────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
-    projectPath = normPath(ctx.cwd);
-    projectId   = projectPath.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-    sessionId   = `pi-${Date.now()}`;
+    projectPath       = normPath(ctx.cwd);
+    projectId         = projectPath.split(/[/\\]/).filter(Boolean).pop() ?? "project";
+    sessionId         = `pi-${Date.now()}`;
     initialRecallDone = false;
+    toolCallCount     = 0;
+    _serverHealthy    = false;
 
     ctx.ui.setStatus("memless", "starting…");
     const ok = await ensureServer(ctx);
     if (!ok) { ctx.ui.setStatus("memless", "offline"); return; }
+    _serverHealthy   = true;
+    _lastHealthCheck = Date.now();
 
-    ctx.ui.setStatus("memless", "indexing…");
-    try {
-      const resp = await api<any>("POST", "/api/index", { projectPath, projectId });
-      indexJobId = resp.data?.jobId ?? "";
-    } catch (e) {
-      ctx.ui.notify(`[memless] index error: ${e}`, "warning");
-    }
-
-    ctx.ui.setStatus("memless", "● ready");
+    // T2.3 — indexar com progresso em tempo real na status bar
+    await startIndexWithProgress(ctx);
   });
 
   // ── before_agent_start: inject recalled memories once per session
-  pi.on("before_agent_start", async (event, ctx) => {
-    if (initialRecallDone || !projectId || !await isServerRunning()) return;
+  // T2.1 — recall seletivo: só prompts substantivos recebem memórias injetadas
+  pi.on("before_agent_start", async (event, _ctx) => {
+    if (initialRecallDone || !projectId || !await checkServer()) return;
     initialRecallDone = true;
+
+    const prompt = (event.prompt ?? "").trim();
+    const isTrivial =
+      prompt.length < 35 ||
+      /^(ls|pwd|cd |cat |echo |run |npm |bun |git )/i.test(prompt) ||
+      /^(ok|yes|no|sure|thanks|done|got it|looks good)/i.test(prompt);
+    if (isTrivial) return;
+
+    const recallQuery = prompt.length > 10 ? prompt.slice(0, 150) : "project decisions patterns architecture";
 
     try {
       const resp = await api<any>("POST", "/api/memory/search", {
-        query:         event.prompt ?? "project decisions patterns architecture",
+        query:         recallQuery,
         projectId,
         sessionId,
         types:         ["decision", "pattern", "code"],
@@ -180,8 +232,14 @@ export default function (pi: ExtensionAPI) {
       const memories: any[] = resp.data ?? [];
       if (!memories.length) return;
 
+      const MAX_SNIPPET = 400;
       const block = memories
-        .map(m => `• [${m.type}|${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}] ${m.content}`)
+        .map(m => {
+          const snip = (m.content ?? "").length > MAX_SNIPPET
+            ? m.content.slice(0, MAX_SNIPPET - 3) + "…"
+            : m.content;
+          return `• [${m.type}|${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}] ${snip}`;
+        })
         .join("\n");
 
       return {
@@ -195,8 +253,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── session_before_compact: replace LLM compaction with memless engine
+  // T2.2 — compress + auto-extrair decisões para memórias
   pi.on("session_before_compact", async (event, ctx) => {
-    if (!await isServerRunning()) return;
+    if (!await checkServer()) return;
 
     const { preparation, signal } = event;
     const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = preparation;
@@ -214,6 +273,25 @@ export default function (pi: ExtensionAPI) {
 
       const summary: string = resp.data?.compressed ?? "";
       if (!summary || signal.aborted) return;
+
+      // Extrair e persistir decisões antes de descartar a conversa
+      const DECISION_RE = /\b(decided|will use|fixed|implemented|chose|must|going to|resolved|refactored|added|changed|migrated)\b/i;
+      const candidates = conversationText
+        .split("\n")
+        .filter(l => { const t = l.trim(); return t.length > 40 && t.length < 400 && DECISION_RE.test(t); })
+        .map(l => ({ line: l.trim(), score: new Set((l.toLowerCase().match(/\b\w{4,}\b/g) ?? [])).size }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+
+      if (candidates.length > 0 && !signal.aborted) {
+        await Promise.allSettled(candidates.map(({ line }) =>
+          api("POST", "/api/memory/store", {
+            content: line, type: "decision", projectId, sessionId,
+            importance: 0.55, tags: ["auto-compact", "extracted"],
+          })
+        ));
+        ctx.ui.notify(`[memless] ↗ auto-saved ${candidates.length} decisions from compaction`, "info");
+      }
 
       const saved = (resp.data?.originalTokens ?? 0) - (resp.data?.compressedTokens ?? 0);
       const pct   = resp.data?.ratio != null ? `${(resp.data.ratio * 100).toFixed(0)}%` : "";
@@ -233,20 +311,20 @@ export default function (pi: ExtensionAPI) {
     } catch (e) {
       ctx.ui.notify(`[memless] compaction fallback to default (${e})`, "warning");
     }
-    // fall back to default Pi compaction
   });
 
   // ── session_shutdown: persist session note ────────────────────
   pi.on("session_shutdown", async () => {
-    if (!projectId || !await isServerRunning()) return;
+    // T3.1 — só salvar se houve atividade real (>= 3 tool calls)
+    if (!projectId || !_serverHealthy || toolCallCount < 3) return;
     try {
       await api("POST", "/api/memory/store", {
-        content:    `Session ${new Date().toISOString().slice(0, 10)} in "${projectId}" at ${projectPath}`,
+        content:    `Worked on "${projectId}" — ${toolCallCount} tool calls on ${new Date().toISOString().slice(0, 10)}`,
         type:       "conversation",
         projectId,
         sessionId,
-        importance: 0.35,
-        tags:       ["session", "auto"],
+        importance: 0.25,
+        tags:       ["session-summary", "auto"],
       });
     } catch {}
   });
@@ -265,9 +343,10 @@ export default function (pi: ExtensionAPI) {
       forceReindex: Type.Optional(Type.Boolean({ description: "Force full reindex even if up to date", default: false })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const path = normPath(params.projectPath ?? ctx.cwd);
       const pid  = params.projectId ?? path.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running — run session_start first" }], details: {} };
       const resp = await api<any>("POST", "/api/index", { projectPath: path, projectId: pid, forceReindex: params.forceReindex ?? false });
       indexJobId = resp.data?.jobId ?? "";
@@ -283,8 +362,10 @@ export default function (pi: ExtensionAPI) {
       jobId: Type.Optional(Type.String({ description: "Job ID (omit to use the latest started job)" })),
     }),
     async execute(_id, params, _sig, _upd) {
+      toolCallCount++;
       const jid = params.jobId ?? indexJobId;
       if (!jid) return { content: [{ type: "text", text: "No active index job" }], details: {} };
+      if (!await checkServer()) return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("GET", `/api/index/status/${jid}`);
       const d = resp.data;
       const text = `status: ${d.status} | files: ${d.filesIndexed} | chunks: ${d.chunksIndexed} | progress: ${d.progressCurrent}/${d.progressTotal}`;
@@ -306,17 +387,19 @@ export default function (pi: ExtensionAPI) {
       exclude:      Type.Optional(Type.Array(Type.String(), { description: "Glob patterns to exclude (e.g. **/*.test.*)" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = params.projectId ?? projectId ?? ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/search", { ...params, projectId: pid });
       const results: any[] = resp.data ?? [];
       if (!results.length)
         return { content: [{ type: "text", text: "No results found." }], details: { count: 0, stale: resp.meta?.stale } };
+      const staleWarn = resp.meta?.stale ? "\n> ⚠️ Index is stale — run memless_index to refresh" : "";
       const text = results
         .map(r => `**${r.filePath}** L${r.lineStart}–${r.lineEnd} (score: ${r.score.toFixed(4)})\n${r.content}`)
         .join("\n\n---\n\n");
-      return { content: [{ type: "text", text }], details: { count: results.length, stale: resp.meta?.stale } };
+      return { content: [{ type: "text", text: staleWarn + text }], details: { count: results.length, stale: resp.meta?.stale } };
     },
   });
 
@@ -337,8 +420,9 @@ export default function (pi: ExtensionAPI) {
       linkTo:     Type.Optional(Type.Array(Type.String(), { description: "Memory IDs to explicitly link" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = params.projectId ?? projectId ?? ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/memory/store", {
         ...params,
@@ -346,6 +430,13 @@ export default function (pi: ExtensionAPI) {
         projectId: pid,
         sessionId,
       });
+      // T4.2 — servidor pode retornar deduplicated:true
+      if (resp.data?.deduplicated) {
+        return {
+          content: [{ type: "text", text: `↑ Similar memory reinforced — id: ${resp.data.id} | importance +0.1` }],
+          details: resp.data,
+        };
+      }
       return {
         content: [{ type: "text", text: `✓ Memory stored — id: ${resp.data?.id} | level: ${resp.data?.level}` }],
         details: resp.data,
@@ -365,8 +456,9 @@ export default function (pi: ExtensionAPI) {
       projectId:     Type.Optional(Type.String()),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = params.projectId ?? projectId ?? ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/memory/search", {
         ...params,
@@ -378,9 +470,15 @@ export default function (pi: ExtensionAPI) {
       const memories: any[] = resp.data ?? [];
       if (!memories.length)
         return { content: [{ type: "text", text: "No memories found for this query." }], details: {} };
-      const text = memories.map(m =>
-        `[${m.type} | imp: ${m.importance?.toFixed(2)} | ${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}]\n${m.content}\ntags: ${(m.tags ?? []).join(", ")}`
-      ).join("\n\n");
+      // T3.3 — truncar conteúdo longo; remover tags do output principal
+      const MAX_CONTENT = 500;
+      const text = memories.map(m => {
+        const snip  = (m.content ?? "").length > MAX_CONTENT
+          ? m.content.slice(0, MAX_CONTENT - 3) + "…"
+          : m.content;
+        const stale = (m.importance ?? 1) < 0.4 ? " ⚠️stale" : "";
+        return `[${m.type} | imp: ${m.importance?.toFixed(2)}${stale} | ${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}]\n${snip}`;
+      }).join("\n\n");
       return { content: [{ type: "text", text }], details: { count: memories.length } };
     },
   });
@@ -394,12 +492,21 @@ export default function (pi: ExtensionAPI) {
       strategy: Type.Optional(Type.Union([
         Type.Literal("code_structure"),
         Type.Literal("conversation_summary"),
-        Type.Literal("semantic_dedup"),
+        Type.Literal("line_dedup"),           // T3.2 — renomeado de semantic_dedup
         Type.Literal("hierarchical"),
-      ], { description: "code_structure (70-90%), conversation_summary (80-95%), semantic_dedup (50-70%), hierarchical (60-80%)" })),
+      ], { description: "code_structure (70-90%), conversation_summary (80-95%), line_dedup (30-50%), hierarchical (60-80%)" })),
     }),
     async execute(_id, params) {
-      if (!await isServerRunning())
+      toolCallCount++;
+      // T1.4 — short-circuit para conteúdo pequeno (< 200 tokens est.)
+      const tokenEstimate = Math.ceil((params.content ?? "").length / 4);
+      if (tokenEstimate < 200) {
+        return {
+          content: [{ type: "text", text: `<!-- memless: content too small to compress (${tokenEstimate} tokens est.) -->\n\n${params.content}` }],
+          details: { skipped: true, originalTokens: tokenEstimate, tokensSaved: 0 },
+        };
+      }
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/compress", { strategy: "code_structure", ...params });
       const d = resp.data;
@@ -422,10 +529,15 @@ export default function (pi: ExtensionAPI) {
       maxResults:        Type.Optional(Type.Number({ description: "Max code search results (default 5)" })),
       includeMemories:   Type.Optional(Type.Boolean({ description: "Include persistent memories (default true)" })),
       memoryBudgetRatio: Type.Optional(Type.Number({ description: "Fraction of maxTokens for memories (default 0.2)" })),
+      responseMode:      Type.Optional(Type.Union([   // T4.3 — expor responseMode
+        Type.Literal("summary"),
+        Type.Literal("full"),
+      ], { description: "summary=compressed snippets (default, saves tokens), full=complete file sections" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = params.projectId ?? projectId ?? ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/context/optimized", {
         maxTokens: 4000, maxResults: 5, includeMemories: true, memoryBudgetRatio: 0.2,
@@ -434,7 +546,8 @@ export default function (pi: ExtensionAPI) {
         sessionId,
       });
       const m = resp.meta ?? {};
-      const header = `<!-- memless | ${m.codeResults ?? 0} code chunks | ${m.memoriesCount ?? 0} memories | ${m.tokensSaved ?? 0} tokens saved | cache: ${m.cacheHit ?? false} -->`;
+      const saved = m.tokensSaved > 0 ? `${m.tokensSaved} tokens saved` : "no compression needed";
+      const header = `<!-- memless | ${m.codeResults ?? 0} code chunks | ${m.memoriesCount ?? 0} memories | ${saved} | raw: ${m.rawTokens ?? "?"} | cache: ${m.cacheHit ?? false} -->`;
       return {
         content: [{ type: "text", text: `${header}\n\n${resp.context ?? ""}` }],
         details: m,
@@ -458,8 +571,9 @@ export default function (pi: ExtensionAPI) {
       nextAction:      Type.Optional(Type.String({ description: "What to do next when restoring" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = (projectId || ctx.cwd.split(/[/\\]/).filter(Boolean).pop()) ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const resp = await api<any>("POST", "/api/checkpoint/create", { ...params, projectId: pid });
       const d = resp.data;
@@ -484,8 +598,9 @@ export default function (pi: ExtensionAPI) {
       limit:     Type.Optional(Type.Number({ description: "Max results (default 10)" })),
     }),
     async execute(_id, params, _sig, _upd, ctx) {
+      toolCallCount++;
       const pid = params.projectId ?? projectId ?? ctx.cwd.split(/[/\\]/).filter(Boolean).pop() ?? "project";
-      if (!await isServerRunning())
+      if (!await checkServer())
         return { content: [{ type: "text", text: "memless server not running" }], details: {} };
       const qp = new URLSearchParams({ type: params.type ?? "summary", projectId: pid, limit: String(params.limit ?? 10) });
       const resp = await api<any>("GET", `/api/analytics?${qp}`);
@@ -493,6 +608,33 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: JSON.stringify(resp.data, null, 2) }],
         details: resp.data,
       };
+    },
+  });
+
+  // ── T4.1: memless_forget ────────────────────────────────────────────
+  pi.registerTool({
+    name:        "memless_forget",
+    label:       "memless: delete memory",
+    description: "Delete a wrong or outdated memory by ID. Get the ID from memless_recall output.",
+    parameters: Type.Object({
+      memoryId: Type.String({ description: "Memory ID (e.g. mem_1712345678_abc123) from recall output" }),
+    }),
+    async execute(_id, params) {
+      toolCallCount++;
+      if (!await checkServer())
+        return { content: [{ type: "text", text: "memless server not running" }], details: {} };
+      try {
+        await api("DELETE", `/api/memory/${params.memoryId}`);
+        return {
+          content: [{ type: "text", text: `✓ Memory ${params.memoryId} deleted` }],
+          details: { deleted: params.memoryId },
+        };
+      } catch (e: any) {
+        return {
+          content: [{ type: "text", text: `✗ Failed to delete: ${e?.message ?? e}` }],
+          details: { error: String(e) },
+        };
+      }
     },
   });
 
@@ -513,9 +655,13 @@ export default function (pi: ExtensionAPI) {
           `embed  : ${provider}`,
           `cache  : L1=${cache.l1Size ?? "?"} L2=${cache.l2Size ?? "?"}`,
           ``,
-          `tools: memless_search  memless_recall  memless_remember`,
+          `session: ${toolCallCount} tool calls`,
+          ``,
+          `tools: memless_search  memless_recall  memless_remember  memless_forget`,
           `       memless_context memless_compress memless_checkpoint`,
           `       memless_index   memless_analytics`,
+          ``,
+          `dashboard: http://localhost:${MEMLESS_PORT}`,
         ].join("\n"),
         "info"
       );

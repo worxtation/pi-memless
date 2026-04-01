@@ -197,6 +197,17 @@ route("POST", "/api/context/optimized", async (req) => {
   return json({ success: true, ...result });
 });
 
+// DELETE /api/memory/:id  — T4.1: memless_forget
+route("DELETE", /^\/api\/memory\/([^/]+)$/, async (_req, url) => {
+  const id = url.pathname.split("/").pop()!;
+  const db = getDb();
+  db.run("DELETE FROM memories_fts WHERE memory_id=?", [id]);
+  db.run("DELETE FROM memory_edges WHERE source_id=? OR target_id=?", [id, id]);
+  const stmt = db.run("DELETE FROM memories WHERE id=?", [id]);
+  if ((stmt as any).changes === 0) return err("Memory not found", 404);
+  return json({ success: true, deleted: id });
+});
+
 // POST /api/checkpoint/create
 route("POST", "/api/checkpoint/create", async (req) => {
   const body = await parseBody(req);

@@ -11,7 +11,8 @@
 export type CompressionStrategy =
   | "code_structure"
   | "conversation_summary"
-  | "semantic_dedup"
+  | "semantic_dedup"   // deprecated — alias de line_dedup
+  | "line_dedup"       // T3.2: nome correto
   | "hierarchical";
 
 export interface CompressionResult {
@@ -34,7 +35,8 @@ export function compress(content: string, strategy: CompressionStrategy = "code_
   switch (strategy) {
     case "code_structure":       compressed = compressCodeStructure(content); break;
     case "conversation_summary": compressed = compressConversation(content);  break;
-    case "semantic_dedup":       compressed = deduplicateContent(content);    break;
+    case "semantic_dedup":                                                     // alias deprecated
+    case "line_dedup":           compressed = deduplicateContent(content);    break;
     case "hierarchical":         compressed = compressHierarchical(content);  break;
     default:                     compressed = content;
   }
