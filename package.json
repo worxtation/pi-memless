@@ -1,0 +1,61 @@
+{
+  "name": "pi-memless",
+  "version": "1.0.0",
+  "description": "Semantic search, persistent memory, and rule-based compression for Pi — runs a local Bun server with hybrid vector+FTS+RRF search, cross-session memory, 98% token compression, and knowledge graph.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "memless",
+    "semantic-search",
+    "memory",
+    "context-compression",
+    "rag",
+    "coding-agent",
+    "local-ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "homepage": "https://github.com/worxtation/pi-memless#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/worxtation/pi-memless.git"
+  },
+  "bugs": {
+    "url": "https://github.com/worxtation/pi-memless/issues"
+  },
+  "type": "module",
+  "files": [
+    "extensions/",
+    "skills/",
+    "prompts/",
+    "server/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": {
+      "optional": false
+    },
+    "@sinclair/typebox": {
+      "optional": false
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

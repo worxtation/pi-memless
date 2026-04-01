@@ -1,0 +1,4 @@
+.github/
+.vscode/
+*.test.ts
+*.spec.ts
