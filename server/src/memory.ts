@@ -60,8 +60,34 @@ function resolveLevel(type: MemoryType, agentId?: string, projectId?: string, se
 // ──────────────────────────────────────────────────────────────────
 // Store
 // ──────────────────────────────────────────────────────────────────
-export async function storeMemory(params: StoreParams): Promise<Memory> {
+export async function storeMemory(params: StoreParams): Promise<Memory & { deduplicated?: boolean }> {
   const db = getDb();
+
+  // T4.2 — dedup check: se já existe memória similar, reforçar ao invés de duplicar
+  // (só para types persistentes; conversas sempre passam)
+  if (params.type !== "conversation") {
+    try {
+      const similar = await searchMemories({
+        query:         params.content,
+        projectId:     params.projectId,
+        types:         [params.type],
+        minImportance: 0.2,
+        limit:         3,
+      });
+      for (const candidate of similar) {
+        // Score RRF alto indica alta similaridade semântica + léxica
+        if ((candidate.score ?? 0) >= 0.04) {
+          const newImp = Math.min(1.0, (candidate.importance ?? 0) + 0.1);
+          db.run(
+            "UPDATE memories SET importance=?, access_count=access_count+1, last_accessed=? WHERE id=?",
+            [newImp, Math.floor(Date.now() / 1000), candidate.id]
+          );
+          return { ...candidate, importance: newImp, deduplicated: true };
+        }
+      }
+    } catch {}
+  }
+
   const id = `mem_${Date.now()}_${randomUUID().slice(0, 6)}`;
   const level = resolveLevel(params.type, params.agentId, params.projectId, params.sessionId);
   const importance = params.importance ?? 0.5;
