@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.ts";
+import { log } from "./logger.ts";
 
 export type EmbeddingProvider = "ollama" | "openai" | "mistral" | "tfidf";
 
@@ -17,7 +18,7 @@ export async function detectProvider(): Promise<EmbeddingProvider> {
     if (res.ok) {
       _ollamaOk = true;
       _provider = "ollama";
-      console.error("[memless] embeddings: ollama");
+      log.info("embeddings: ollama");
       return _provider;
     }
   } catch {}
@@ -25,20 +26,20 @@ export async function detectProvider(): Promise<EmbeddingProvider> {
   // 2. Try OpenAI
   if (CONFIG.openai.apiKey) {
     _provider = "openai";
-    console.error("[memless] embeddings: openai");
+    log.info("embeddings: openai");
     return _provider;
   }
 
   // 3. Try Mistral
   if (CONFIG.mistral.apiKey) {
     _provider = "mistral";
-    console.error("[memless] embeddings: mistral");
+    log.info("embeddings: mistral");
     return _provider;
   }
 
   // 4. Fallback: TF-IDF (no network, no API)
   _provider = "tfidf";
-  console.error("[memless] embeddings: tfidf fallback (install Ollama for semantic search)");
+  log.info("embeddings: tfidf fallback (install Ollama for semantic search)");
   return _provider;
 }
 

@@ -12,6 +12,7 @@ import { startIndexJob, getIndexJob, searchProject, isIndexStale, getAnalytics }
 import { createCheckpoint, getCheckpoint, listCheckpoints } from "./checkpoint.ts";
 import { startBackgroundJobs }   from "./jobs.ts";
 import { cacheStats, cacheGet, cacheSet } from "./cache.ts";
+import { log } from "./logger.ts";
 
 // ── Path helper ────────────────────────────────────────────────
 function normalizeWinPath(p: string): string {
@@ -136,20 +137,21 @@ route("POST", "/api/context/optimized", async (req) => {
   if (!query)     return err("query is required");
   if (!projectId) return err("projectId is required");
 
-  // Check session cache
-  const cacheKey = `optctx:${sessionId ?? ""}:${projectId}:${query}`;
+  // ── Cache key: sem sessionId para que L2 funcione cross-session (T1.2) ──
+  const cacheKey = `optctx:${projectId}:${djb2(query)}`;
   const cached = cacheGet<{ context: string; meta: unknown }>(cacheKey);
-  if (cached) return json({ success: true, ...cached, meta: { ...cached.meta, cacheHit: true } });
+  if (cached) return json({ success: true, ...cached, meta: { ...(cached.meta as any), cacheHit: true } });
 
-  // 1. Code search
-  const codeResults = await searchProject({ query, projectId, maxResults, responseMode: "summary" });
+  // 1. Code search — buscar full para compressão real (T1.1)
+  const { responseMode: reqMode } = body as any;
+  const codeResults = await searchProject({ query, projectId, maxResults, responseMode: reqMode ?? "full" });
 
   // 2. Memory recall
   let memorySnippets: string[] = [];
   if (includeMemories) {
     const memories = await searchMemories({ query, projectId, sessionId, limit: 5, minImportance: 0.3 });
     memorySnippets = memories.map(m =>
-      `[${m.type}|${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}] ${m.content}`
+      `[${m.type}|${new Date(m.createdAt * 1000).toISOString().slice(0, 10)}] ${m.content.slice(0, 400)}`
     );
   }
 
@@ -157,34 +159,37 @@ route("POST", "/api/context/optimized", async (req) => {
   const memBudget  = Math.floor(maxTokens * memoryBudgetRatio);
   const codeBudget = maxTokens - memBudget;
 
-  let memSection   = memorySnippets.length
+  const memSection  = memorySnippets.length
     ? `## Relevant Memories\n${memorySnippets.join("\n")}`
     : "";
-  let codeSection  = codeResults.length
+  let codeSection   = codeResults.length
     ? `## Code Context\n${codeResults.map(r =>
         `### ${r.filePath} (L${r.lineStart}–${r.lineEnd})\n\`\`\`${r.language}\n${r.content}\n\`\`\``
       ).join("\n\n")}`
     : "";
 
-  // 4. Compress if needed
+  // 4. Medir tokens ANTES de comprimir (economia real) — T1.1
   const { compress: doCompress, estimateTokens } = await import("./compression.ts");
-  const rawCode = codeSection;
-  const codeToks = estimateTokens(rawCode);
-  if (codeToks > codeBudget && rawCode) {
-    const compressed = doCompress(rawCode, "code_structure");
+  const rawCodeToks = estimateTokens(codeSection);
+  const rawTotalToks = rawCodeToks + estimateTokens(memSection);
+
+  if (rawCodeToks > codeBudget && codeSection) {
+    const compressed = doCompress(codeSection, "code_structure");
     codeSection = compressed.compressed;
+    log.debug(`context compressed: ${rawCodeToks}→${estimateTokens(codeSection)} tokens`);
   }
 
   const context = [memSection, codeSection].filter(Boolean).join("\n\n");
-  const tokensSaved = estimateTokens(rawCode + memSection) - estimateTokens(context);
+  const tokensSaved = Math.max(0, rawTotalToks - estimateTokens(context));
 
   const result = {
     context,
     meta: {
-      codeResults: codeResults.length,
+      codeResults:   codeResults.length,
       memoriesCount: memorySnippets.length,
-      tokensSaved: Math.max(0, tokensSaved),
-      cacheHit: false,
+      tokensSaved,
+      rawTokens:     rawTotalToks,
+      cacheHit:      false,
     },
   };
 
@@ -239,6 +244,13 @@ route("GET", "/api/cache/stats", async () => {
   return json({ success: true, data: cacheStats() });
 });
 
+// ── djb2 hash para cache keys compactas ────────────────────────
+function djb2(str: string): string {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(36);
+}
+
 // ── Bun.serve ────────────────────────────────────────────────────
 const server = Bun.serve({
   port: CONFIG.port,
@@ -281,4 +293,4 @@ const server = Bun.serve({
   },
 });
 
-console.error(`[memless] server running on http://localhost:${server.port}`);
+log.error(`server running on http://localhost:${server.port}`);

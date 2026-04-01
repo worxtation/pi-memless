@@ -10,6 +10,7 @@ import { getDb } from "./db.ts";
 import { cosineSimilarity } from "./embeddings.ts";
 import { cachePruneExpired } from "./cache.ts";
 import { CONFIG } from "./config.ts";
+import { log } from "./logger.ts";
 
 let _started = false;
 let _runCount = 0;
@@ -23,7 +24,7 @@ export function startBackgroundJobs() {
   _started = true;
   const intervalMs = CONFIG.jobs.consolidationIntervalMs;
   setInterval(() => runConsolidation(), intervalMs);
-  console.error(`[memless] background jobs started (interval: ${intervalMs / 1000}s)`);
+  log.info(`background jobs started (interval: ${intervalMs / 1000}s)`);
 }
 
 async function runConsolidation() {
@@ -81,8 +82,11 @@ async function runConsolidation() {
     // ── 5. Cache cleanup ─────────────────────────────────────────────
     cachePruneExpired();
 
-    if (promoted + decayed + pruned > 0) {
-      console.error(`[memless] consolidation: +${promoted} promoted, ${decayed} decayed, ${pruned} pruned`);
+    // Só logar se houve promoções ou purges relevantes (decay sozinho é ruído)
+    if (promoted > 0 || pruned > 0) {
+      log.info(`consolidation: +${promoted} promoted, ${pruned} pruned (${decayed} decayed silently)`);
+    } else {
+      log.debug(`consolidation: ${decayed} decayed, nothing promoted/pruned`);
     }
   } catch (err) {
     console.error("[memless] consolidation error:", err);
@@ -131,6 +135,6 @@ async function runRedundancyFilter() {
   }
 
   if (merged.size > 0) {
-    console.error(`[memless] redundancy filter: merged ${merged.size} duplicates`);
+    log.info(`redundancy filter: merged ${merged.size} duplicates`);
   }
 }
