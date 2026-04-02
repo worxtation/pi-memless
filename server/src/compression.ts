@@ -133,9 +133,58 @@ function compressCodeStructure(content: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * Count `{` or `}` in a line, skipping content inside string literals
+ * and template literal expressions to avoid false depth changes.
+ * Handles: 'single', "double", `template`, and line comments (//).
+ */
 function countChar(str: string, char: string): number {
   let n = 0;
-  for (const c of str) if (c === char) n++;
+  let i = 0;
+  const len = str.length;
+
+  while (i < len) {
+    const c = str[i];
+
+    // Line comment → everything until end of string is a comment
+    if (c === "/" && str[i + 1] === "/") break;
+
+    // Block comment opener /* ... */
+    if (c === "/" && str[i + 1] === "*") {
+      i += 2;
+      while (i < len && !(str[i - 1] === "*" && str[i] === "/")) i++;
+      i++;
+      continue;
+    }
+
+    // String / template literal
+    if (c === "'" || c === '"' || c === "`") {
+      const quote = c;
+      i++;
+      while (i < len) {
+        const q = str[i];
+        if (q === "\\" && quote !== "`") { i += 2; continue; } // escape in string
+        if (q === "\\" && quote === "`") { i += 2; continue; } // escape in template
+        // Template expression ${...} — recurse is hard; skip by depth-counting inside
+        if (quote === "`" && q === "$" && str[i + 1] === "{") {
+          i += 2;
+          let depth = 1;
+          while (i < len && depth > 0) {
+            if (str[i] === "{") depth++;
+            else if (str[i] === "}") depth--;
+            i++;
+          }
+          continue;
+        }
+        if (q === quote) { i++; break; } // end of string/template
+        i++;
+      }
+      continue;
+    }
+
+    if (c === char) n++;
+    i++;
+  }
   return n;
 }
 

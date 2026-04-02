@@ -8,7 +8,7 @@ import { getDb }             from "./db.ts";
 import { detectProvider }    from "./embeddings.ts";
 import { compress }          from "./compression.ts";
 import { storeMemory, searchMemories } from "./memory.ts";
-import { startIndexJob, getIndexJob, searchProject, isIndexStale, getAnalytics } from "./search.ts";
+import { startIndexJob, getIndexJob, getLatestIndexJob, searchProject, isIndexStale, getAnalytics } from "./search.ts";
 import { createCheckpoint, getCheckpoint, listCheckpoints } from "./checkpoint.ts";
 import { startBackgroundJobs }   from "./jobs.ts";
 import { cacheStats, cacheGet, cacheSet } from "./cache.ts";
@@ -82,10 +82,16 @@ route("POST", "/api/index", async (req) => {
   return json({ success: true, data: job });
 });
 
-// GET /api/index/status/:jobId
+// GET /api/index/status/:jobId  (jobId = "__latest__" → most recent job)
 route("GET", /^\/api\/index\/status\/([^/]+)$/, async (_req, url) => {
-  const jobId = url.pathname.split("/").pop()!;
-  const job = getIndexJob(jobId);
+  const parts = url.pathname.split("/");
+  const jobId    = parts.pop()!;
+  const queryPid = url.searchParams.get("projectId") ?? undefined;
+
+  const job = jobId === "__latest__"
+    ? getLatestIndexJob(queryPid)
+    : getIndexJob(jobId);
+
   if (!job) return err("Job not found", 404);
   return json({ success: true, data: job });
 });

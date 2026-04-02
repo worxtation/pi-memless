@@ -3,8 +3,8 @@ import { embed, cosineSimilarity } from "./embeddings.ts";
 import { cacheGet, cacheSet, cacheInvalidateProject } from "./cache.ts";
 import { CONFIG } from "./config.ts";
 import { randomUUID } from "crypto";
-import { readdirSync, statSync, readFileSync } from "fs";
-import { join, extname, relative } from "path";
+import { readdirSync, statSync, readFileSync, existsSync } from "fs";
+import { join, extname, relative, resolve } from "path";
 
 export interface SearchResult {
   id: string;
@@ -67,6 +67,22 @@ export function startIndexJob(projectPath: string, projectId?: string, forceRein
   });
 
   return getIndexJob(jobId)!;
+}
+
+export function getLatestIndexJob(projectId?: string): IndexJob | null {
+  const db = getDb();
+  const row = projectId
+    ? db.query<any, [string]>("SELECT * FROM index_jobs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1").get(projectId)
+    : db.query<any, []>("SELECT * FROM index_jobs ORDER BY created_at DESC LIMIT 1").get();
+  if (!row) return null;
+  return {
+    jobId: row.job_id, projectId: row.project_id, projectPath: row.project_path,
+    status: row.status, progressCurrent: row.progress_current,
+    progressTotal: row.progress_total, filesIndexed: row.files_indexed,
+    chunksIndexed: row.chunks_indexed, error: row.error ?? undefined,
+    createdAt: row.created_at, startedAt: row.started_at ?? undefined,
+    completedAt: row.completed_at ?? undefined,
+  };
 }
 
 export function getIndexJob(jobId: string): IndexJob | null {
@@ -335,8 +351,100 @@ function normalizePath(p: string): string {
   return p;
 }
 
+// ── .gitignore support ───────────────────────────────────────────────────────
+// Parses one .gitignore file and returns a matcher function.
+// Supports: plain names, paths, * wildcards, ** globs, negation (!), comments.
+function parseGitignore(gitignorePath: string): ((relPath: string, isDir: boolean) => boolean) | null {
+  if (!existsSync(gitignorePath)) return null;
+  let raw: string;
+  try { raw = readFileSync(gitignorePath, "utf8"); } catch { return null; }
+
+  // Parse patterns (skip comments and empty lines)
+  const patterns = raw
+    .split("\n")
+    .map(l => l.trimEnd())
+    .filter(l => l.length > 0 && !l.startsWith("#"));
+
+  if (!patterns.length) return null;
+
+  return function isIgnored(relPath: string, isDir: boolean): boolean {
+    // Normalize to forward-slash
+    const p = relPath.replace(/\\/g, "/");
+    let ignored = false;
+
+    for (const raw of patterns) {
+      const negated = raw.startsWith("!");
+      const pat = negated ? raw.slice(1) : raw;
+      if (matchGitignorePattern(p, pat, isDir)) {
+        ignored = !negated;
+      }
+    }
+    return ignored;
+  };
+}
+
+function matchGitignorePattern(relPath: string, pattern: string, isDir: boolean): boolean {
+  // dir-only pattern
+  const dirOnly = pattern.endsWith("/");
+  if (dirOnly && !isDir) return false;
+  const pat = dirOnly ? pattern.slice(0, -1) : pattern;
+
+  // If pattern contains no slash (except trailing), match against the basename only
+  // Otherwise match against the full relative path
+  const hasSlash = pat.includes("/");
+  const target   = hasSlash ? relPath : relPath.split("/").pop()!;
+
+  return gitGlob(target, pat);
+}
+
+function gitGlob(str: string, pattern: string): boolean {
+  // Build a regex from a gitignore-style glob
+  const re = pattern
+    .replace(/[.+^${}()|[\]\\]/g, (c) => (c === "\\" ? "\\\\" : "\\".concat(c))) // escape regex chars except handled below
+    .replace(/\*\*\//g, "(?:.+/)?")
+    .replace(/\*\*/g, ".*")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]");
+  try {
+    return new RegExp(`^${re}$`).test(str);
+  } catch {
+    return false;
+  }
+}
+
+// Cache of gitignore matchers per directory
+const _gitignoreCache = new Map<string, ((rel: string, isDir: boolean) => boolean) | null>();
+
+function getGitignoreMatcher(dir: string) {
+  if (_gitignoreCache.has(dir)) return _gitignoreCache.get(dir)!;
+  const matcher = parseGitignore(join(dir, ".gitignore"));
+  _gitignoreCache.set(dir, matcher);
+  return matcher;
+}
+
+function isIgnoredByGitignore(fullPath: string, projectRoot: string, isDir: boolean): boolean {
+  // Check .gitignore files in each ancestor directory up to projectRoot
+  let current = fullPath;
+  while (true) {
+    const parent = resolve(current, "..");
+    if (parent === current) break; // filesystem root
+
+    const matcher = getGitignoreMatcher(parent);
+    if (matcher) {
+      // relPath relative to the directory that owns the .gitignore
+      const rel = relative(parent, fullPath).replace(/\\/g, "/");
+      if (matcher(rel, isDir)) return true;
+    }
+
+    if (normalizePath(parent) === normalizePath(projectRoot)) break;
+    current = parent;
+  }
+  return false;
+}
+
 function collectFiles(dir: string): string[] {
   dir = normalizePath(dir);
+  _gitignoreCache.clear(); // reset cache per indexing run
   const results: string[] = [];
 
   function walk(current: string) {
@@ -350,12 +458,14 @@ function collectFiles(dir: string): string[] {
       try { st = statSync(fullPath); } catch { continue; }
 
       if (st.isDirectory()) {
-        if (!CONFIG.skipDirs.has(entry)) walk(fullPath);
+        if (CONFIG.skipDirs.has(entry)) continue;
+        if (isIgnoredByGitignore(fullPath, dir, true)) continue;
+        walk(fullPath);
       } else if (st.isFile()) {
         const ext = extname(entry).toLowerCase();
-        if (CONFIG.includeExtensions.has(ext) && st.size < 500_000) {
-          results.push(fullPath);
-        }
+        if (!CONFIG.includeExtensions.has(ext) || st.size >= 500_000) continue;
+        if (isIgnoredByGitignore(fullPath, dir, false)) continue;
+        results.push(fullPath);
       }
     }
   }

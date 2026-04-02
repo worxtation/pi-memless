@@ -53,6 +53,7 @@ let sessionId   = "";
 let indexJobId  = "";
 let initialRecallDone = false;
 let toolCallCount = 0;           // T3.1 — rastrear atividade real da sessão
+let _lastStalenessCheck = 0;     // T2.4 — evitar check repetido em <60s
 
 // ── Health cache (T1.3) ───────────────────────────────────────
 let _serverHealthy    = false;
@@ -636,6 +637,35 @@ export default function (pi: ExtensionAPI) {
         };
       }
     },
+  });
+
+  // ── T2.4: tool_call hook — aviso de index stale antes de buscas ─────────
+  pi.on("tool_call", async (event, ctx) => {
+    if (!["memless_search", "memless_context"].includes(event.toolName)) return;
+    if (!projectId || !_serverHealthy) return;
+
+    const now = Date.now();
+    if (now - _lastStalenessCheck < 60_000) return; // throttle: 1 check/min
+    _lastStalenessCheck = now;
+
+    try {
+      const jobPath = indexJobId || "__latest__";
+      const qp = !indexJobId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+      const resp = await api<any>("GET", `/api/index/status/${jobPath}${qp}`);
+      const job = resp.data;
+      // Considera stale se: job completado há > 24h ou nenhum job existente
+      const completedAt: number = job?.completedAt ?? 0;
+      const staleThresholdS = 24 * 60 * 60; // 24 horas
+      const isStale = !completedAt || (Math.floor(now / 1000) - completedAt) > staleThresholdS;
+      if (isStale) {
+        ctx.ui.notify(
+          `[memless] index is stale (>24h) — results may be incomplete.\nRun memless_index to refresh.`,
+          "warning"
+        );
+      }
+    } catch {
+      // servidor pode não ter /api/index/status/__latest__ — silenciar erro
+    }
   });
 
   // ── /memless command ──────────────────────────────────────────
