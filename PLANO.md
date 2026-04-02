@@ -10,11 +10,11 @@
 
 ```
 Fase 1 — Token Economy (bugs reais)        [x] [x] [x] [x]     4/4 ✅
-Fase 2 — Hooks & UX                        [x] [x] [x] [ ]     3/4
+Fase 2 — Hooks & UX                        [x] [x] [x] [x]     4/4 ✅
 Fase 3 — Remoção de Ruído                  [x] [x] [x] [x]     4/4 ✅
 Fase 4 — Ferramentas Novas                 [x] [x] [x]         3/3 ✅
 Fase 5 — Dashboard Browser                 [x] [x]             2/2 ✅
-Fase 6 — Arquitetura (médio prazo)         [ ] [ ] [ ]         0/3
+Fase 6 — Arquitetura (médio prazo)         [x] [x] [ ]         2/3
 ```
 
 ---
@@ -327,8 +327,8 @@ await startIndexAndPoll(ctx);
 
 ---
 
-### T2.4 — `before_tool_call` hook: avisar quando index está stale antes de busca
-**Status:** `[ ]` pendente — verificar se Pi SDK expe before_tool_call  
+### T2.4 — `tool_call` hook: avisar quando index está stale antes de busca
+**Status:** `[x]` commit `7161e71`  
 **Arquivos:** `extensions/memless/index.ts`  
 **Custo:** 1h  
 **Impacto:** o agente recebe alerta proativo quando vai buscar em índice desatualizado — evita confusão com resultados incompletos
@@ -859,7 +859,7 @@ ctx.ui.notify(
 ---
 
 ### T6.1 — Vector search: eliminar full table scan com `sqlite-vec`
-**Status:** `[ ]` pendente  
+**Status:** `[ ]` pendente (baixa prioridade — só necessário com 5k+ chunks)  
 **Arquivos:** `server/src/search.ts`, `server/src/memory.ts`, `server/src/db.ts`  
 **Custo:** 1 dia  
 **Impacto:** em projetos com 5.000+ chunks, a busca atual carrega ~30MB de JSON na memória. Com sqlite-vec, a busca vetorial fica no SQLite nativo.
@@ -874,7 +874,7 @@ ctx.ui.notify(
 ---
 
 ### T6.2 — `compressCodeStructure`: corrigir contagem de `{` em strings
-**Status:** `[ ]` pendente  
+**Status:** `[x]` commit `7161e71`  
 **Arquivos:** `server/src/compression.ts`  
 **Custo:** 3h  
 **Impacto:** compressão de código com template literals / strings com `{` deixa de produzir resultados incorretos
@@ -884,7 +884,7 @@ ctx.ui.notify(
 ---
 
 ### T6.3 — `collectFiles`: respeitar `.gitignore`
-**Status:** `[ ]` pendente  
+**Status:** `[x]` commit `7161e71`  
 **Arquivos:** `server/src/search.ts`  
 **Custo:** 2h  
 **Impacto:** projetos com `.gitignore` não terão arquivos de build/dist indexados, reduzindo ruído nas buscas e tamanho do índice
@@ -916,7 +916,9 @@ Após completar todas as fases, validar:
 - [x] `http://localhost:3434` → dashboard carrega com memórias, cache stats e top queries
 - [x] Dashboard → botão `del` em memória → memória removida sem usar LLM
 - [x] Comando `/memless` → exibe link `dashboard: http://localhost:3434`
-- [ ] `before_tool_call` (T2.4) — pendente verificação do hook no Pi SDK
+- [x] `tool_call` hook (T2.4) — aviso stale quando index >24h antes de buscas
+- [x] `.gitignore` respeitado no indexador (T6.3) — `generated/`, custom patterns, negação `!`
+- [x] `compressCodeStructure` fix `{` em strings/templates (T6.2)
 
 ---
 
@@ -944,5 +946,5 @@ Após completar todas as fases, validar:
 
 ---
 
-*Última atualização: 2026-04-01 (rev 3 — implementação completa F1–F5)*  
+*Última atualização: 2026-04-02 (rev 4 — F1–F6 completos exceto T6.1 sqlite-vec)*  
 *Análise base: análise aprofundada registrada em memless (mem_1775016235682_26b74e)*
