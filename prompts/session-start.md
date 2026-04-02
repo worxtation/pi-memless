@@ -1,7 +1,18 @@
-# memless — Session Start
+# memless — Session Start (manual warm-up)
 
-Call `memless_recall` with the query below to warm up context from previous sessions,
-then index the project if the index is missing or stale.
+> **Normally you don't need this.**
+> The extension already runs automatically on every session:
+> - `session_start` → server starts + project is indexed (with progress in the status bar)
+> - `before_agent_start` → relevant memories are injected before your first substantive prompt
+>
+> Use this prompt only when:
+> - Your first prompt was a short command (e.g. `"ls"`, `"run tests"`) and the auto-recall was skipped
+> - You want a deeper architectural warm-up at the start of a complex task
+> - The index is stale and you want to force a refresh
+
+---
+
+## Force recall (when auto-recall didn't fire)
 
 ```
 memless_recall({
@@ -12,7 +23,7 @@ memless_recall({
 })
 ```
 
-After recall, index if needed:
+## Force re-index (when index is stale or missing)
 
 ```
 memless_index({
@@ -22,7 +33,8 @@ memless_index({
 })
 ```
 
-Then explore with:
+## Deep architectural context (optional — for large or unfamiliar codebases)
+
 ```
 memless_context({
   query: "overall architecture and main entry points",

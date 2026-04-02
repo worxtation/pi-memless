@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/pi-memless)](https://www.npmjs.com/package/pi-memless)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-**pi-memless** adds a local **context and memory engine** to Pi. It runs as a Bun server on port `3434` and exposes 9 tools the LLM can call natively — giving your agent semantic search, cross-session memory, and zero-cost compression.
+**pi-memless** adds a local **context and memory engine** to Pi. It runs as a Bun server on port `3434` and exposes tools the LLM can call natively — giving your agent semantic search, cross-session memory, zero-cost compression, and a browser dashboard.
 
 | What                      | How much                      |
 |---------------------------|-------------------------------|
@@ -57,28 +57,26 @@ ollama pull nomic-embed-text
 pi
 ```
 
-On session start, memless:
-1. Starts the Bun server (if not already running)
-2. Indexes your project files in the background
-3. Injects relevant memories before your first prompt
+Everything below happens **automatically** on every session — no setup needed:
+
+| Step | Hook | What happens |
+|------|------|--------------|
+| Server starts | `session_start` | Bun server spawned (or reuses existing) |
+| Project indexed | `session_start` | Files indexed in background; status bar shows `indexing 12/87 (14%)` → `● ready` |
+| Memories injected | `before_agent_start` | Relevant past decisions recalled and prepended to your first prompt |
+| Stale index warning | `tool_call` | Warns before a search if the index is >24 hours old |
+| Context compressed | `session_before_compact` | Conversation compressed without LLM when Pi hits context limit |
+| Decisions extracted | `session_before_compact` | Key decisions auto-saved to memory during each compaction |
+| Session saved | `session_shutdown` | Session note saved (only when ≥3 tool calls were made) |
 
 ---
 
 ## AGENTS.md
 
-This repo ships an **`AGENTS.md`** file at the root. This file contains mandatory
-behavioral rules that are automatically loaded by Pi (and compatible coding agents)
-at the start of every session — so the LLM always knows how to use memless correctly
-without you having to repeat yourself.
+This repo ships an **`AGENTS.md`** file at the root. Pi (and compatible coding agents) load it
+automatically at the start of every session — so the LLM always knows how to use memless correctly.
 
 ### What it enforces
-
-```
-project-root/
-└── AGENTS.md   ← auto-loaded by Pi as system-level instructions
-```
-
-The `AGENTS.md` defines 6 mandatory rules for the agent:
 
 1. **Always call `memless_recall`** before exploring files on any known task — never open files cold.
 2. **Always use `memless_search`** instead of grep/find/glob — fall back to filesystem only on zero results.
@@ -87,20 +85,13 @@ The `AGENTS.md` defines 6 mandatory rules for the agent:
 5. **Create a checkpoint** at every milestone and before any risky operation.
 6. **Before ending a session**, save all learnings using the `/close-session` prompt template.
 
-It also includes the tool cheat-sheet, server details, compression strategies, memory types,
-and prompt template reminders — so the agent always has full context on how to operate memless.
-
 ### How to use it in your own project
 
-Copy `AGENTS.md` into your project root. Pi will pick it up automatically.
-If you want to customize the rules (e.g. add project-specific conventions), just edit the file —
-the agent will follow your additions on the next session.
+Copy `AGENTS.md` into your project root:
 
 ```bash
-# Copy from an installed pi-memless package
 cp ~/.pi/packages/pi-memless/AGENTS.md ./AGENTS.md
-
-# Or download directly
+# or
 curl -O https://raw.githubusercontent.com/worxtation/pi-memless/main/AGENTS.md
 ```
 
@@ -115,6 +106,7 @@ curl -O https://raw.githubusercontent.com/worxtation/pi-memless/main/AGENTS.md
 | `memless_search` | Hybrid semantic + keyword search (Vector + FTS5 + RRF) |
 | `memless_remember` | Store a decision / pattern / code snippet / preference |
 | `memless_recall` | Retrieve memories from previous sessions |
+| `memless_forget` | Delete a wrong or outdated memory by ID |
 | `memless_compress` | Rule-based compression — zero LLM cost |
 | `memless_context` | Search + memories + compress in one single call |
 | `memless_checkpoint` | Gzip task snapshot with TTL |
@@ -136,7 +128,11 @@ memless_search({ query: "JWT authentication middleware", maxResults: 8 })
 
 ### Multi-file analysis in one shot
 ```
-memless_context({ query: "how does the auth flow work?", maxTokens: 4000 })
+memless_context({
+  query: "how does the auth flow work?",
+  maxTokens: 4000,
+  responseMode: "summary"   // or "full" for complete file sections
+})
 ```
 
 ### Save a discovery
@@ -147,6 +143,11 @@ memless_remember({
   importance: 0.85,
   tags: ["database"]
 })
+```
+
+### Delete a wrong memory
+```
+memless_forget({ memoryId: "mem_1712345678_abc123" })
 ```
 
 ### Compress before sending large code
@@ -172,10 +173,12 @@ memless_checkpoint({
 |-----------------------|----------------------|-----------|
 | `code_structure`      | Source code          | 70–90%    |
 | `conversation_summary`| Chat / log history   | 80–95%    |
-| `semantic_dedup`      | Repetitive content   | 50–70%    |
+| `line_dedup`          | Repetitive content   | 30–50%    |
 | `hierarchical`        | Docs / Markdown      | 60–80%    |
 
 All strategies are deterministic and run entirely locally — no API calls, no cost.
+
+> **Note:** `memless_compress` skips the server round-trip entirely for content under ~200 tokens.
 
 ---
 
@@ -193,44 +196,67 @@ The more a memory is accessed, the slower it decays.
 | `conversation` | 0.78          | Session notes — decays fastest  |
 
 **Auto-promotion:** `importance ≥ 0.85` + `accessCount ≥ 3` → promoted to `persistent` (no decay)  
-**Auto-pruning:** `importance < 0.25` + age > 45 days + `accessCount < 2` → deleted automatically
+**Auto-pruning:** `importance < 0.25` + age > 45 days + `accessCount < 2` → deleted automatically  
+**Deduplication:** storing a memory similar to an existing one reinforces the existing memory instead of creating a duplicate
+
+---
+
+## Dashboard
+
+Open **`http://localhost:3434`** in your browser for a live dashboard:
+
+- **Status** — server uptime, embedding provider, cache L1/L2 sizes
+- **Memories** — paginated list with type, importance, content preview; inline delete button
+- **Searches** — top queries and average latency
+- **Index jobs** — progress and file/chunk counts
+
+The dashboard auto-refreshes every 5 seconds. Memories can be edited or deleted directly in the browser — no LLM required.
+
+---
+
+## Indexing & .gitignore
+
+The indexer respects `.gitignore` files at every directory level. Patterns like `dist/`, `generated/`, custom glob rules, and negations (`!important.ts`) are all honoured — only source files get indexed.
+
+Directories in the built-in skip list (`node_modules`, `.git`, `dist`, `build`, `.next`, `target`, etc.) are always skipped regardless of `.gitignore`.
 
 ---
 
 ## Prompt Templates
 
-Four workflow templates are included and registered as Pi prompt commands:
-
 | Template | Command | Use |
 |---|---|---|
-| Session warm-up | `/session-start` | Recall context and memories at the start of a work session |
+| Session warm-up | `/session-start` | Manual override — force recall/index when auto-recall didn't fire |
 | New feature | `/implement` | Structured flow for planning and implementing a new feature |
 | Bug hunt | `/debug` | Guided investigation and fix workflow |
 | Session close | `/close-session` | Save all learnings and decisions before ending a session |
+
+> **`/session-start` is rarely needed** — the extension auto-recalls memories and auto-indexes on every session start. Use it only when your first prompt was a short command (e.g. `ls`) that bypassed the auto-recall, or when you want a forced deep warm-up.
 
 ---
 
 ## Commands
 
 ```
-/memless    — Show server status, embedding provider, cache stats, and full tool list
+/memless    — Show server status, embedding provider, cache stats, tool list, and dashboard link
 ```
 
 ---
 
 ## Configuration
 
-All settings are controlled via environment variables before starting Pi:
+| Variable             | Default                  | Description                                   |
+|----------------------|--------------------------|-----------------------------------------------|
+| `MEMLESS_PORT`       | `3434`                   | Server port                                   |
+| `MEMLESS_DATA_DIR`   | `~/.config/memless`      | SQLite data directory                         |
+| `MEMLESS_LOG`        | `error`                  | Log level: `silent` / `error` / `info` / `debug` |
+| `OLLAMA_URL`         | `http://localhost:11434` | Ollama API URL                                |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text`       | Embedding model to use with Ollama            |
+| `OPENAI_API_KEY`     | —                        | Use OpenAI embeddings instead                 |
+| `MISTRAL_API_KEY`    | —                        | Use Mistral embeddings instead                |
+| `BUN_PATH`           | auto-detected            | Custom path to `bun` binary                   |
 
-| Variable             | Default                  | Description                        |
-|----------------------|--------------------------|------------------------------------|
-| `MEMLESS_PORT`       | `3434`                   | Server port                        |
-| `MEMLESS_DATA_DIR`   | `~/.config/memless`      | SQLite data directory              |
-| `OLLAMA_URL`         | `http://localhost:11434` | Ollama API URL                     |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text`       | Embedding model to use with Ollama |
-| `OPENAI_API_KEY`     | —                        | Use OpenAI embeddings instead      |
-| `MISTRAL_API_KEY`    | —                        | Use Mistral embeddings instead     |
-| `BUN_PATH`           | auto-detected            | Custom path to `bun` binary        |
+By default the server logs only startup errors. Set `MEMLESS_LOG=info` to see indexing progress, background jobs, and embedding provider detection.
 
 ---
 
@@ -241,22 +267,24 @@ pi-memless/
 ├── AGENTS.md                     — Mandatory agent rules (copy to your project root)
 ├── extensions/memless/index.ts   — Pi extension (auto-discovered on install)
 ├── skills/memless/SKILL.md       — Pi skill with usage rules injected per task
-├── prompts/                      — 4 workflow prompt templates
-│   ├── session-start.md
+├── prompts/                      — Workflow prompt templates
+│   ├── session-start.md          — Manual warm-up override (rarely needed)
 │   ├── implement.md
 │   ├── debug.md
 │   └── close-session.md
 └── server/src/
-    ├── index.ts       — Bun HTTP server (port 3434)
-    ├── config.ts      — Configuration via env vars
-    ├── db.ts          — SQLite schema (bun:sqlite)
-    ├── embeddings.ts  — Ollama / OpenAI / Mistral / TF-IDF fallback
-    ├── compression.ts — Rule-based engine (4 strategies)
-    ├── memory.ts      — Store / search / decay / graph relationships
-    ├── search.ts      — File indexer + hybrid RRF search
-    ├── cache.ts       — L1 in-memory Map + L2 SQLite cache
-    ├── checkpoint.ts  — Gzip task snapshots with TTL
-    └── jobs.ts        — Background consolidation (5-min cycle)
+    ├── index.ts        — Bun HTTP server (port 3434)
+    ├── config.ts       — Configuration via env vars
+    ├── db.ts           — SQLite schema (bun:sqlite)
+    ├── embeddings.ts   — Ollama / OpenAI / Mistral / TF-IDF fallback
+    ├── compression.ts  — Rule-based engine (4 strategies)
+    ├── memory.ts       — Store / search / decay / dedup / graph relationships
+    ├── search.ts       — File indexer + hybrid RRF search + .gitignore support
+    ├── cache.ts        — L1 in-memory Map + L2 SQLite cache
+    ├── checkpoint.ts   — Gzip task snapshots with TTL
+    ├── jobs.ts         — Background consolidation (5-min cycle)
+    ├── dashboard.ts    — Browser dashboard HTML (served at GET /)
+    └── logger.ts       — Log level via MEMLESS_LOG env var
 ```
 
 ---
